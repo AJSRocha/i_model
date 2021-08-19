@@ -1,0 +1,75 @@
+---
+title: "Prototype"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = F, warning = F, message = F)
+library(flexdashboard)
+```
+
+```{r global}
+library(ggplot2)
+library(plotly)
+library(dplyr)
+
+load('gux_data.Rdata')
+df = teste; rm(teste)
+```
+
+Data Prep 
+=======================================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+selectInput('EESPECIE',
+            label = 'Especie',
+            choices = c('none',as.character(unique(df$EESPECIE))))
+selectInput('x',
+            label = 'eixo dos xx',
+            choices = names(df),
+            selected = 'lota')
+selectInput('fill',
+            label = 'Cores munitas',
+            choices = names(df),
+            selected = 'arte_eu')
+
+```
+
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### DispPlot
+
+```{r}
+renderPlotly({
+p = df %>%
+  filter(case_when(
+  input$EESPECIE == 'none' ~ EESPECIE %in% EESPECIE,
+  T ~ EESPECIE %in% input$EESPECIE)) %>%
+  #filter(EESPECIE  %in%  input$EESPECIE) %>%
+  group_by_(input$x, input$fill) %>% #notar uso da sintaxe 'group_by_' para permitir ingerir o input
+  summarise(QVENDA = sum(QVENDA)) %>%
+  ggplot() + 
+  geom_bar(aes_string(x = input$x,
+                      y = 'QVENDA',
+                      fill = input$fill),
+           stat = 'identity') + 
+  theme_light() + 
+  theme(legend.position = 'left')
+p
+})
+```
+
+
+
+
+Tweedie - 0/1 Misturas
+=======================================================================
