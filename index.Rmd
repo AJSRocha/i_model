@@ -16,9 +16,20 @@ library(flexdashboard)
 library(ggplot2)
 library(plotly)
 library(dplyr)
+library(tweedie)
+library(caret)
+library(keras)
 
 load('gux_data.Rdata')
 df = teste; rm(teste)
+df = df %>% select(IEMBARCA, IDATVEND, EESPECIE, ETAMANHO, QVENDA, VVENDA, lota,arte_eu, p.GUU)
+
+#
+df$mix = case_when(df$p.GUU < 1 & df$EESPECIE == 'GUU' ~ 1,
+                   df$p.GUU > 0 & df$EESPECIE != 'GUU' ~ 1,
+                   T ~0) %>% factor()
+#TODO acrescentar ano
+
 ```
 
 Data Prep 
@@ -29,7 +40,7 @@ Column {.sidebar}
 
 ```{r}
 selectInput('EESPECIE',
-            label = 'Especie',
+            label = 'Filtro por Especie',
             choices = c('none',as.character(unique(df$EESPECIE))))
 selectInput('x',
             label = 'eixo dos xx',
@@ -46,7 +57,7 @@ selectInput('fill',
 Column {data-width=650}
 -----------------------------------------------------------------------
 
-### DispPlot
+### QuantPlot
 
 ```{r}
 renderPlotly({
@@ -68,8 +79,266 @@ p
 })
 ```
 
+### MixPlot
+
+```{r}
+renderPlotly({
+p = df %>%
+  filter(case_when(
+  input$EESPECIE == 'none' ~ EESPECIE %in% EESPECIE,
+  T ~ EESPECIE %in% input$EESPECIE)) %>%
+  #filter(EESPECIE  %in%  input$EESPECIE) %>%
+  group_by_(input$x, input$fill) %>% #notar uso da sintaxe 'group_by_' para permitir ingerir o input
+  ggplot() + 
+  geom_boxplot(aes_string(x = input$x,
+                          y = 'p.GUU',
+                      fill = input$fill)) + 
+  theme_light() + 
+  theme(legend.position = 'left')
+p
+})
+```
 
 
-
-Tweedie - 0/1 Misturas
+Mixture Modeling
 =======================================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+sliderInput('tt_split',
+            label = 'train_test_split',
+            min = 0.1,
+            max = 0.9,
+            value = 0.2,
+            step = .05)
+
+
+```
+
+Column {data-width=325}
+-----------------------------------------------------------------------
+
+### Quantas observações reservadas para validação
+
+```{r}
+renderValueBox({
+  valueBox(
+    value = length(index()),
+    icon = "fa-area-chart",
+    color = if (length(index()) >= 1500) "warning" else "primary"
+  )
+}) 
+  
+```
+
+### Dados de Treino
+
+```{r}
+
+index = reactive({caret::createDataPartition(df$p.GUU,
+                                   list = F,
+                                   p = input$tt_split)})
+
+train = reactive({df %>%
+    slice(-index()) 
+  })
+
+test = reactive({df %>%
+    slice(index()) 
+  })
+    
+model_1 = reactive({
+  caret::train(mix ~  arte_eu + EESPECIE + lota + ETAMANHO + VVENDA,
+        data = train(),
+        method = 'rpart')
+  })  
+
+renderPrint({
+caret::confusionMatrix(train()$mix, predict(model_1()))
+  })
+```
+
+Column {data-width=325}
+-----------------------------------------------------------------------
+
+### % out-of-bag
+
+```{r}
+renderValueBox({
+  valueBox(
+    value = input$tt_split,
+    icon = "fa-area-chart",
+    color = if (input$tt_split >= 0.3) "warning" else "primary"
+  )
+}) 
+```
+
+### Dados de Teste
+
+```{r}
+renderPrint({
+caret::confusionMatrix(test()$mix, predict(model_1(), newdata = test()))
+  })
+```
+
+Column {data-width=325}
+-----------------------------------------------------------------------
+
+```{r}
+renderPlotly({
+  data.frame(y = train()$mix,
+            y_hat = predict(model_1(), newdata = train())) %>%
+    ggplot() + 
+    geom_bar(aes(x = y,
+                   fill = y_hat),
+             stat = 'count')
+})
+  
+```
+
+```{r}
+renderPlotly({
+  data.frame(y = test()$mix,
+            y_hat = predict(model_1(), newdata = test())) %>%
+    ggplot() + 
+    geom_bar(aes(x = y,
+                   fill = y_hat),
+             stat = 'count')
+})
+  
+```
+
+Data Preview
+=======================================================================
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Quantos individuos com mistura previstos?
+
+```{r}
+
+renderValueBox({
+  valueBox(
+    value = nrow(df_nn()),
+    icon = "fa-area-chart",
+    color = "primary")
+})
+
+```
+
+### Dados
+
+```{r}
+renderTable(df_nn())
+```
+
+Neural Network
+=======================================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+actionButton('i_m','pimba na querida')
+```
+
+Column {data-width=325}
+-----------------------------------------------------------------------
+
+### Training the NN
+
+```{r}
+pred = reactive({
+  predict(model_1(), newdata = df)
+  })
+
+norm = reactive({
+df %>%
+  select(-p.GUU) %>%
+  select(where(is.numeric)) %>%
+  caret::preProcess(., method = 'range')
+})
+
+df_nn = reactive({df %>%
+  select(-p.GUU, -IEMBARCA, -IDATVEND, -mix, -QVENDA, -VVENDA) %>%
+  predict(caret::dummyVars("~.", data = .),
+          newdata = .) %>%
+  cbind(.,
+        predict(norm(), newdata = (df %>% select(where(is.numeric))))) %>%
+      
+  filter(pred() == 1)  %>%
+  as.matrix 
+  
+})
+
+nn_index = reactive({caret::createDataPartition(df_nn()[,'p.GUU'],
+                                                list=F,
+                                                p=0.1)
+  })
+
+train_X = reactive({df_nn()[-nn_index(),1:30]})
+train_y = reactive({df_nn()[-nn_index(),31]})
+test_X = reactive({df_nn()[nn_index(),1:30]})
+test_y = reactive({df_nn()[nn_index(),31]})
+
+model = reactive({keras_model_sequential() %>%
+  layer_dense(input_shape = dim(train_X)[2],
+              units=90,
+              name="H1",
+              use_bias=T,
+              activation = 'relu') %>%
+  layer_dense(units = 45, use_bias =  T, activation = 'relu') %>%
+  layer_dense(units = 1,name="Output")%>% keras::compile(loss = 'mse',
+                         optimizer = optimizer_adagrad(lr=0.125),
+                         metrics = c('mean_absolute_error'))
+})
+
+history = reactive({
+  model() %>% fit(
+  train_X(), train_y(),
+  epochs = 30, batch_size = 128,
+  validation_data = list(test_X(), test_y()))
+})
+
+renderPlot({
+  plot(history()) + theme_light()
+})
+
+```
+
+Column {data-width=325}
+-----------------------------------------------------------------------
+
+### Predict vs Real (treino)
+
+```{r}
+renderPlotly({
+ggplot() +
+geom_point(aes(x = train_y(),
+           y = model() %>% predict(train_X()))) +
+  geom_abline(slope=1,intercept=0) +
+  theme_light()
+})
+```
+
+### Predict vs Real (validação)
+
+```{r}
+renderPlotly({
+ggplot() +
+geom_point(aes(x = test_y(),
+           y = model() %>% predict(test_X()))) +
+  geom_abline(slope=1,intercept=0) +
+  theme_light()
+})
+```
+
+
+
+
+
+
+
